@@ -113,7 +113,9 @@ except ImportError:
         if model.negative:
             # precompute negative labels
             labels = zeros(model.negative + 1)
-            labels[0] = 1.0
+            ###===========JJX====================
+            labels[0] = -2.0
+            labels += 1
 
         for pos, word in enumerate(sentence):
             if word is None:
@@ -162,34 +164,104 @@ except ImportError:
 
 
 def train_sg_pair(model, word, word2, alpha, labels, train_w1=True, train_w2=True):
-    l1 = model.syn0[word2.index]
-    neu1e = zeros(l1.shape)
+    ###==============================JJX==================
+    import numpy
+    from numpy import identity, ones
+    l1mean = model.syn0mean[word2.index]
+    l1var = model.syn0var[word2.index]
+    neu1e_mean = zeros(l1mean.shape)
+    neu1e_var = zeros(l1var.shape)
 
     if model.hs:
+        l1mean = l1mean
         # work on the entire tree at once, to push as much work into numpy's C routines as possible (performance)
-        l2a = deepcopy(model.syn1[word.point])  # 2d matrix, codelen x layer1_size
-        fa = 1.0 / (1.0 + exp(-dot(l1, l2a.T)))  # propagate hidden -> output
-        ga = (1 - word.code - fa) * alpha  # vector of error gradients multiplied by the learning rate
-        if train_w1:
-            model.syn1[word.point] += outer(ga, l1)  # learn hidden -> output
-        neu1e += dot(ga, l2a)  # save error
+        #l2a = deepcopy(model.syn1[word.point])  # 2d matrix, codelen x layer1_size
+        #fa = 1.0 / (1.0 + exp(-dot(l1mean, l2a.T)))  # propagate hidden -> output
+        #ga = (1 - word.code - fa) * alpha  # vector of error gradients multiplied by the learning rate
+        #if train_w1:
+        #    model.syn1[word.point] += outer(ga, l1mean)  # learn hidden -> output
+        #neu1e_mean += dot(ga, l2a)  # save error
 
     if model.negative:
-        # use this word (label = 1) + `negative` other random words not from this sentence (label = 0)
         word_indices = [word.index]
+
+        #loss function
+        b_mean = model.syn0mean[word2.index]
+        b_var = model.syn0var[word2.index]
+        label_index = 0
+        p = len(l1mean)
+        L = 100 #margin
         while len(word_indices) < model.negative + 1:
-            w = model.table[random.randint(model.table.shape[0])]
-            if w != word.index:
+            if label_index > 0:
+                w = model.table[random.randint(model.table.shape[0])]
+                if w == word.index:
+                    continue
                 word_indices.append(w)
-        l2b = model.syn1neg[word_indices]  # 2d matrix, k+1 x layer1_size
-        fb = 1. / (1. + exp(-dot(l1, l2b.T)))  # propagate hidden -> output
-        gb = (labels - fb) * alpha  # vector of error gradients multiplied by the learning rate
-        if train_w1:
-            model.syn1neg[word_indices] += outer(gb, l1)  # learn hidden -> output
-        neu1e += dot(gb, l2b)  # save error
-    if train_w2:
-        model.syn0[word2.index] += neu1e  # learn input -> hidden
-    return neu1e
+            #energy function
+            a_mean = model.syn1neg_mean[word_indices[label_index]]
+            a_var = model.syn1neg_var[word_indices[label_index]]
+            sum_mean = a_mean - b_mean
+            sum_var = a_var + b_var
+            neg_sum_mean = -1 * sum_mean
+            deno = numpy.sqrt(((2 * numpy.pi) ** p) * numpy.linalg.det(sum_var))
+            if deno == 0:
+                logger.warning("deno is 0!!\n")
+                word_indices.pop(label_index)
+                continue
+            e_index = dot(dot(neg_sum_mean, numpy.linalg.pinv(sum_var.T)), neg_sum_mean) / -2
+            energy = exp(e_index) / deno
+            logger.info("energy %f \n" % energy)
+            L += labels[label_index] * energy
+            label_index += 1
+        if L <= 0:
+             return
+
+        label_index = 0
+        #gradient and update
+        while len(word_indices) < model.negative + 1:
+            l2b_mean = model.syn1neg_mean[word_indices[label_index]]
+            l2b_var = model.syn1neg_var[word_indices[label_index]]
+
+            inv_var_sum = numpy.linalg.pinv(l1var + l2b_var)
+            delta = dot((l1mean - l2b_mean), inv_var_sum)
+            g_mean = delta * alpha * labels[label_index]
+            g_var = (dot(delta.T, delta) - inv_var_sum) / 2.0 * labels[label_index]
+            if train_w1:
+                model.syn1neg_mean[word_indices[label_index]] += g_mean
+                model.syn1neg_var[word_indices[label_index]] += g_var
+            neu1e_mean += -1 * g_mean
+            neu1e_var += g_var
+            label_index += 1
+        if train_w2:
+            model.syn0mean[word2.index] += neu1e_mean
+            model.syn0var[word2.index] += neu1e_var
+
+
+        #delta = numpy.linalg.eig(delta_diag)[0]
+
+        #delta = varsum .* (l1mean - l2b_mean)
+
+
+        # use this word (label = 1) + `negative` other random words not from this sentence (label = 0)
+        #word_indices = [word.index]
+        #while len(word_indices) < model.negative + 1:
+        #    w = model.table[random.randint(model.table.shape[0])]
+        #    if w != word.index:
+        #        word_indices.append(w)
+        #l2b_mean = model.syn1neg_mean[word_indices]  # 2d matrix, k+1 x layer1_size
+        #l2b_var = model.syn1neg_var[word_indices]
+        #fb_mean = 1. / (1. + exp(-dot(l1mean, l2b_mean.T)))  # propagate hidden -> output
+        #fb_var = 1. / (1. + exp(-dot(l1var, l2b_var.T)))
+        #gb_mean = (labels - fb_mean) * alpha  # vector of error gradients multiplied by the learning rate
+        #gb_var = (labels - fb_var) * alpha
+#        if train_w1:
+#            model.syn1neg_mean[word_indices] += outer(gb_mean, l1mean)  # learn hidden -> output
+#            model.syn1neg_var[word_indices] += outer(gb_var, l1var)
+#        neu1e_mean += dot(gb_mean, l2b_mean)  # save error
+#        neu1e_var += dot(gb_var, l2b_var)
+#    if train_w2:
+#        model.syn0[word2.index] += neu1e_mean  # learn input -> hidden
+    return neu1e_mean
 
 
 def train_cbow_pair(model, word, word2_indices, l1, alpha, labels, train_w1=True, train_w2=True):
@@ -516,17 +588,24 @@ class Word2Vec(utils.SaveLoad):
     def reset_weights(self):
         """Reset all projection weights to an initial (untrained) state, but keep the existing vocabulary."""
         logger.info("resetting layer weights")
-        self.syn0 = empty((len(self.vocab), self.layer1_size), dtype=REAL)
+        ###==================JJ===============
+        from numpy import identity
+        self.syn0mean = empty((len(self.vocab), self.layer1_size), dtype=REAL)
+        self.syn0var = empty((len(self.vocab), self.layer1_size, self.layer1_size), dtype=REAL)
+
         # randomize weights vector by vector, rather than materializing a huge random matrix in RAM at once
         for i in xrange(len(self.vocab)):
             # construct deterministic seed from word AND seed argument
             # Note: Python's built in hash function can vary across versions of Python
             random.seed(uint32(self.hashfxn(self.index2word[i] + str(self.seed))))
-            self.syn0[i] = (random.rand(self.layer1_size) - 0.5) / self.layer1_size
+            ###==================JJ===============
+            self.syn0mean[i] = (random.rand(self.layer1_size) - 0.5) / self.layer1_size
+            self.syn0var[i] = identity(self.layer1_size)*(random.rand(self.layer1_size) - 0.5) / self.layer1_size
         if self.hs:
             self.syn1 = zeros((len(self.vocab), self.layer1_size), dtype=REAL)
         if self.negative:
-            self.syn1neg = zeros((len(self.vocab), self.layer1_size), dtype=REAL)
+            self.syn1neg_mean = zeros((len(self.vocab), self.layer1_size), dtype=REAL)
+            self.syn1neg_var = zeros((len(self.vocab), self.layer1_size, self.layer1_size), dtype=REAL)
         self.syn0norm = None
 
 
@@ -542,16 +621,31 @@ class Word2Vec(utils.SaveLoad):
                 for word, vocab in sorted(iteritems(self.vocab), key=lambda item: -item[1].count):
                     vout.write(utils.to_utf8("%s %s\n" % (word, vocab.count)))
         logger.info("storing %sx%s projection weights into %s" % (len(self.vocab), self.layer1_size, fname))
-        assert (len(self.vocab), self.layer1_size) == self.syn0.shape
-        with utils.smart_open(fname, 'wb') as fout:
-            fout.write(utils.to_utf8("%s %s\n" % self.syn0.shape))
+        assert (len(self.vocab), self.layer1_size) == self.syn0mean.shape
+        assert (len(self.vocab), self.layer1_size, self.layer1_size) == self.syn0var.shape
+        fname_mean = fname + '.mean'
+        with utils.smart_open(fname_mean, 'wb') as fout:
+            fout.write(utils.to_utf8("%s %s\n" % self.syn0mean.shape))
             # store in sorted order: most frequent words at the top
             for word, vocab in sorted(iteritems(self.vocab), key=lambda item: -item[1].count):
-                row = self.syn0[vocab.index]
+                row = self.syn0mean[vocab.index]
                 if binary:
                     fout.write(utils.to_utf8(word) + b" " + row.tostring())
                 else:
                     fout.write(utils.to_utf8("%s %s\n" % (word, ' '.join("%f" % val for val in row))))
+        fname_var = fname + '.var'
+        with utils.smart_open(fname_var, 'wb') as fout:
+            fout.write(utils.to_utf8("%s %s %s\n" % self.syn0var.shape))
+            # store in sorted order: most frequent words at the top
+            for word, vocab in sorted(iteritems(self.vocab), key=lambda item: -item[1].count):
+                row = self.syn0var[vocab.index]
+                if binary:
+                    fout.write(utils.to_utf8(word) + b" " + row.tostring())
+                else:
+                    fout.write(utils.to_utf8("%s\n" % (word)))
+                    for i in range(self.layer1_size):
+                        fout.write(utils.to_utf8("%s\n" % (' '.join("%f" % val for val in row[i]))))
+                    fout.write(utils.to_utf8("\n"))
 
 
     @classmethod
@@ -763,7 +857,7 @@ class Word2Vec(utils.SaveLoad):
           array([ -1.40128313e-02, ...]
 
         """
-        return self.syn0[self.vocab[word].index]
+        return self.syn0mean[self.vocab[word].index]
 
 
     def __contains__(self, word):
@@ -821,13 +915,13 @@ class Word2Vec(utils.SaveLoad):
         if getattr(self, 'syn0norm', None) is None or replace:
             logger.info("precomputing L2-norms of word weight vectors")
             if replace:
-                for i in xrange(self.syn0.shape[0]):
-                    self.syn0[i, :] /= sqrt((self.syn0[i, :] ** 2).sum(-1))
-                self.syn0norm = self.syn0
+                for i in xrange(self.syn0mean.shape[0]):
+                    self.syn0mean[i, :] /= sqrt((self.syn0mean[i, :] ** 2).sum(-1))
+                self.syn0norm = self.syn0mean
                 if hasattr(self, 'syn1'):
                     del self.syn1
             else:
-                self.syn0norm = (self.syn0 / sqrt((self.syn0 ** 2).sum(-1))[..., newaxis]).astype(REAL)
+                self.syn0norm = (self.syn0mean / sqrt((self.syn0mean ** 2).sum(-1))[..., newaxis]).astype(REAL)
 
     @staticmethod
     def log_accuracy(section):
