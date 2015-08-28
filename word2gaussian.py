@@ -186,8 +186,8 @@ def train_sg_pair(model, word, word2, alpha, labels, train_w1=True, train_w2=Tru
         word_indices = [word.index]
 
         #loss function
-        b_mean = model.syn0mean[word2.index]
-        b_var = model.syn0var[word2.index]
+        a_mean = model.syn0mean[word2.index]
+        a_var = model.syn0var[word2.index]
         label_index = 0
         p = len(l1mean)
         L = 100 #margin
@@ -198,23 +198,31 @@ def train_sg_pair(model, word, word2, alpha, labels, train_w1=True, train_w2=Tru
                     continue
                 word_indices.append(w)
             #energy function
-            a_mean = model.syn1neg_mean[word_indices[label_index]]
-            a_var = model.syn1neg_var[word_indices[label_index]]
+            b_mean = model.syn1neg_mean[word_indices[label_index]]
+            b_var = model.syn1neg_var[word_indices[label_index]]
             sum_mean = a_mean - b_mean
             sum_var = a_var + b_var
             neg_sum_mean = -1 * sum_mean
-            deno = numpy.sqrt(((2 * numpy.pi) ** p) * numpy.linalg.det(sum_var))
-            if deno == 0:
-                logger.warning("deno is 0!!\n")
-                word_indices.pop(label_index)
-                continue
-            e_index = dot(dot(neg_sum_mean, numpy.linalg.pinv(sum_var.T)), neg_sum_mean) / -2
-            energy = exp(e_index) / deno
-            logger.info("energy %f \n" % energy)
-            L += labels[label_index] * energy
+            energy = numpy.log(numpy.linalg.det(sum_var)) + p * numpy.log(2 * numpy.pi)
+            energy /= -2
+            #deno = numpy.sqrt(((2 * numpy.pi) ** p) * numpy.linalg.det(sum_var))
+            #logger.info("deno %.5f \n" % deno)
+            #if deno == 0 and label_index > 1:
+            #    logger.info("sum var %s" % sum_var)
+                #logger.warning("deno is 0!!\n")
+                #word_indices.pop(label_index)
+            #    continue
+            e_index = dot(dot(neg_sum_mean, numpy.linalg.pinv(sum_var.T)), neg_sum_mean.T) / -2
+            logger.info("e_index %.5f \n" % e_index)
+
+            #energy = exp(e_index) / deno
+            energy += e_index
+            logger.info("energy %.5f \n" % energy)
+            L += -1 * labels[label_index] * energy
             label_index += 1
         if L <= 0:
-             return
+            logger.info("LOSS function %.5f \n" % L)
+            return
 
         label_index = 0
         #gradient and update
@@ -225,7 +233,8 @@ def train_sg_pair(model, word, word2, alpha, labels, train_w1=True, train_w2=Tru
             inv_var_sum = numpy.linalg.pinv(l1var + l2b_var)
             delta = dot((l1mean - l2b_mean), inv_var_sum)
             g_mean = delta * alpha * labels[label_index]
-            g_var = (dot(delta.T, delta) - inv_var_sum) / 2.0 * labels[label_index]
+            delta_filter = dot(delta.T, delta) * numpy.identity(model.layer1_size)
+            g_var = (delta_filter - inv_var_sum) / 2.0 * labels[label_index]
             if train_w1:
                 model.syn1neg_mean[word_indices[label_index]] += g_mean
                 model.syn1neg_var[word_indices[label_index]] += g_var
@@ -600,7 +609,12 @@ class Word2Vec(utils.SaveLoad):
             random.seed(uint32(self.hashfxn(self.index2word[i] + str(self.seed))))
             ###==================JJ===============
             self.syn0mean[i] = (random.rand(self.layer1_size) - 0.5) / self.layer1_size
-            self.syn0var[i] = identity(self.layer1_size)*(random.rand(self.layer1_size) - 0.5) / self.layer1_size
+            rand_var = (random.rand() - 0.5) / self.layer1_size
+            if rand_var < 0:
+                rand_var -= 1
+            else:
+                rand_var +=1
+            self.syn0var[i] = identity(self.layer1_size) * rand_var
         if self.hs:
             self.syn1 = zeros((len(self.vocab), self.layer1_size), dtype=REAL)
         if self.negative:
