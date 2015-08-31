@@ -81,7 +81,7 @@ except ImportError:
 
 from numpy import exp, dot, zeros, outer, random, dtype, float32 as REAL,\
     uint32, seterr, array, uint8, vstack, argsort, fromstring, sqrt, newaxis,\
-    ndarray, empty, sum as np_sum, prod
+    ndarray, empty, sum as np_sum, prod, identity
 
 logger = logging.getLogger("gensim.models.word2vec")
 
@@ -114,8 +114,8 @@ except ImportError:
             # precompute negative labels
             labels = zeros(model.negative + 1)
             ###===========JJX====================
-            labels[0] = -2.0
-            labels += 1
+            labels[0] = 2.0
+            labels -= 1
 
         for pos, word in enumerate(sentence):
             if word is None:
@@ -204,7 +204,7 @@ def train_sg_pair(model, word, word2, alpha, labels, train_w1=True, train_w2=Tru
             sum_var = a_var + b_var
             neg_sum_mean = -1 * sum_mean
             energy = numpy.log(numpy.linalg.det(sum_var)) + p * numpy.log(2 * numpy.pi)
-            energy /= -2
+            energy /= -2.0
             #deno = numpy.sqrt(((2 * numpy.pi) ** p) * numpy.linalg.det(sum_var))
             #logger.info("deno %.5f \n" % deno)
             #if deno == 0 and label_index > 1:
@@ -212,16 +212,17 @@ def train_sg_pair(model, word, word2, alpha, labels, train_w1=True, train_w2=Tru
                 #logger.warning("deno is 0!!\n")
                 #word_indices.pop(label_index)
             #    continue
-            e_index = dot(dot(neg_sum_mean, numpy.linalg.pinv(sum_var.T)), neg_sum_mean.T) / -2
-            logger.info("e_index %.5f \n" % e_index)
+            e_index = dot(dot(neg_sum_mean, numpy.linalg.pinv(sum_var.T)), neg_sum_mean.T)
+            #logger.info("e_index %.5f \n" % e_index)
 
             #energy = exp(e_index) / deno
-            energy += e_index
-            logger.info("energy %.5f \n" % energy)
+            energy += e_index / -2.0
+            #logger.info("energy %.5f \n" % energy)
             L += -1 * labels[label_index] * energy
             label_index += 1
+        logger.info("LOSS function %.5f \n" % L)
         if L <= 0:
-            logger.info("LOSS function %.5f \n" % L)
+
             return
 
         label_index = 0
@@ -598,29 +599,37 @@ class Word2Vec(utils.SaveLoad):
         """Reset all projection weights to an initial (untrained) state, but keep the existing vocabulary."""
         logger.info("resetting layer weights")
         ###==================JJ===============
-        from numpy import identity
+
         self.syn0mean = empty((len(self.vocab), self.layer1_size), dtype=REAL)
         self.syn0var = empty((len(self.vocab), self.layer1_size, self.layer1_size), dtype=REAL)
 
         # randomize weights vector by vector, rather than materializing a huge random matrix in RAM at once
+        self.sum_all_mean = 0
         for i in xrange(len(self.vocab)):
             # construct deterministic seed from word AND seed argument
             # Note: Python's built in hash function can vary across versions of Python
             random.seed(uint32(self.hashfxn(self.index2word[i] + str(self.seed))))
             ###==================JJ===============
             self.syn0mean[i] = (random.rand(self.layer1_size) - 0.5) / self.layer1_size
-            rand_var = (random.rand() - 0.5) / self.layer1_size
-            if rand_var < 0:
-                rand_var -= 1
-            else:
-                rand_var +=1
-            self.syn0var[i] = identity(self.layer1_size) * rand_var
+            self.sum_all_mean += self.syn0mean[i]
+        for i in xrange(len(self.vocab)):
+            self.syn0var[i] = self.var_reset_weights()
         if self.hs:
             self.syn1 = zeros((len(self.vocab), self.layer1_size), dtype=REAL)
         if self.negative:
             self.syn1neg_mean = zeros((len(self.vocab), self.layer1_size), dtype=REAL)
             self.syn1neg_var = zeros((len(self.vocab), self.layer1_size, self.layer1_size), dtype=REAL)
         self.syn0norm = None
+
+    def var_reset_weights(self):
+        average_mean = self.sum_all_mean / len(self.vocab)
+        sum_distance2mean = 0
+        for i in xrange(len(self.vocab)):
+            sum_distance2mean += abs(self.syn0mean[i] - average_mean)
+        var_init_weight = sum_distance2mean / len(self.vocab)
+        var_weight = identity(self.layer1_size) * var_init_weight
+        logger.info("var init weight %.5f \n" % var_init_weight)
+        return var_weight
 
 
     def save_word2vec_format(self, fname, fvocab=None, binary=False):
